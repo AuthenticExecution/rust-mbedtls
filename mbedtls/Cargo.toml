@@ -92,3 +92,8 @@ required-features = ["std"]
 [[test]]
 name = "hyper"
 required-features = ["std"]
+
+[[test]]
+name = "ssl_conf_psk"
+path = "tests/ssl_conf_psk.rs"
+required-features = ["std"]

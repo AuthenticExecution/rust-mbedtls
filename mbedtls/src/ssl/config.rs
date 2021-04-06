@@ -112,18 +112,18 @@ define!(
         // This allows caller to share structure on multiple configs if needed.
         own_cert: Vec<Arc<MbedtlsList<Certificate>>>,
         own_pk: Vec<Arc<Pk>>,
-    
+
         ca_cert: Option<Arc<MbedtlsList<Certificate>>>,
         crl: Option<Arc<Crl>>,
-        
+
         rng: Option<Arc<dyn RngCallback + 'static>>,
-        
+
         ciphersuites: Vec<Arc<Vec<c_int>>>,
         curves: Option<Arc<Vec<ecp_group_id>>>,
-        
+
         #[allow(dead_code)]
         dhm: Option<Arc<Dhm>>,
-        
+
         verify_callback: Option<Arc<dyn VerifyCallback + 'static>>,
         #[cfg(feature = "std")]
         dbg_callback: Option<Arc<dyn DbgCallback + 'static>>,
@@ -204,7 +204,7 @@ impl Config {
         unsafe { ssl_conf_rng(self.into(), Some(T::call), rng.data_ptr()) };
         self.rng = Some(rng);
     }
-    
+
     pub fn set_min_version(&mut self, version: Version) -> Result<()> {
         let minor = match version {
             Version::Ssl3 => 0,
@@ -248,11 +248,11 @@ impl Config {
 
     pub fn set_ca_list(&mut self, ca_cert: Arc<MbedtlsList<Certificate>>, crl: Option<Arc<Crl>>) {
         // This will override internal pointers to what we provide.
-        
+
         unsafe { ssl_conf_ca_chain(self.into(), ca_cert.inner_ffi_mut(), crl.as_ref().map(|crl| crl.inner_ffi_mut()).unwrap_or(::core::ptr::null_mut())); }
 
         self.ca_cert = Some(ca_cert);
-        self.crl = crl;        
+        self.crl = crl;
     }
 
     pub fn push_cert(&mut self, own_cert: Arc<MbedtlsList<Certificate>>, own_pk: Arc<Pk>) -> Result<()> {
@@ -266,7 +266,7 @@ impl Config {
                  .map(|_| ())
         }
     }
-    
+
     /// Server only: configure callback to use for generating/interpreting session tickets.
     pub fn set_session_tickets_callback<T: TicketCallback + 'static>(&mut self, cb: Arc<T>) {
         unsafe {
@@ -292,7 +292,7 @@ impl Config {
         /// Client only: minimal FFDH group size
         set_ffdh_min_bitlen(bitlen: c_uint) = ssl_conf_dhm_min_bitlen
     );
-    
+
     pub fn set_sni_callback<F>(&mut self, cb: F)
     where
         F: SniCallback + 'static,
@@ -321,9 +321,9 @@ impl Config {
             //
             let cb = &mut *(closure as *mut F);
             let context = UnsafeFrom::from(ctx).unwrap();
-            
+
             let mut ctx = HandshakeContext::init(context);
-            
+
             let name = from_raw_parts(name, name_len);
             match cb(&mut ctx, name) {
                 Ok(()) => 0,
@@ -331,7 +331,7 @@ impl Config {
             }
         }
 
-        
+
         self.sni_callback = Some(Arc::new(cb));
         unsafe { ssl_conf_sni(self.into(), Some(sni_callback::<F>), &**self.sni_callback.as_mut().unwrap() as *const _ as *mut c_void) }
     }
@@ -355,17 +355,17 @@ impl Config {
             if crt.is_null() || closure.is_null() || flags.is_null() {
                 return ::mbedtls_sys::ERR_X509_BAD_INPUT_DATA;
             }
-            
+
             let cb = &mut *(closure as *mut F);
             let crt: &mut Certificate = UnsafeFrom::from(crt).expect("valid certificate");
-            
+
             let mut verify_error = match VerifyError::from_bits(*flags) {
                 Some(ve) => ve,
                 // This can only happen if mbedtls is setting flags in VerifyError that are
                 // missing from our definition.
                 None => return ::mbedtls_sys::ERR_X509_BAD_INPUT_DATA,
             };
-            
+
             let res = cb(crt, depth, &mut verify_error);
             *flags = verify_error.bits();
             match res {
@@ -374,7 +374,7 @@ impl Config {
             }
         }
 
-        
+
         self.verify_callback = Some(Arc::new(cb));
         unsafe { ssl_conf_verify(self.into(), Some(verify_callback::<F>), &**self.verify_callback.as_mut().unwrap() as *const _ as *mut c_void) }
     }
@@ -433,17 +433,61 @@ impl Config {
                 false => std::ffi::CStr::from_ptr(file).to_string_lossy(),
                 true => Cow::from(""),
             };
-            
+
             let message = match message.is_null() {
                 false => std::ffi::CStr::from_ptr(message).to_string_lossy(),
                 true => Cow::from(""),
             };
-            
+
             cb(level, file, line, message);
         }
 
         self.dbg_callback = Some(Arc::new(cb));
         unsafe { ssl_conf_dbg(self.into(), Some(dbg_callback::<F>), &**self.dbg_callback.as_mut().unwrap() as *const _ as *mut c_void) }
+    }
+
+    /// psk and psk_identity cannot be empty
+    pub fn set_psk(&mut self, psk: &[u8], psk_identity: &str) -> Result<()> {
+        assert!(psk_identity.len()>0);
+        assert!(psk.len()>0);
+        unsafe { ssl_conf_psk(&mut self.inner,
+                         psk.as_ptr(), psk.len(),
+                         psk_identity.as_ptr(), psk_identity.len())
+            .into_result().map(|_| ())
+        }
+    }
+
+    pub fn set_psk_callback<F>(&mut self, cb: &mut F)
+        where
+            F: FnMut(&mut HandshakeContext, &str) -> Result<()>,
+    {
+        unsafe extern "C" fn psk_callback<F>(
+            closure: *mut c_void,
+            ctx: *mut ssl_context,
+            psk_identity: *const c_uchar,
+            identity_len: size_t) -> c_int
+            where
+                F: FnMut(&mut HandshakeContext, &str) -> Result<()>,
+        {
+            assert!(identity_len>0);
+            let cb = &mut *(closure as *mut F);
+            let context = UnsafeFrom::from(ctx).unwrap();
+            let mut ctx = HandshakeContext::init(context);
+            let psk_identity = &*(from_raw_parts(psk_identity, identity_len)
+                                              as *const [u8] as *const str);
+            match cb(&mut ctx, psk_identity) {
+                Ok(()) => 0,
+                Err(e) => e.to_int(),
+            }
+        }
+
+        unsafe {
+            ssl_conf_psk_cb(
+                &mut self.inner,
+                Some(psk_callback::<F>),
+                cb as *mut F as _
+            )
+        }
     }
 }
 
@@ -454,8 +498,6 @@ impl Config {
 // ssl_conf_dtls_badmac_limit
 // ssl_conf_handshake_timeout
 // ssl_conf_session_cache
-// ssl_conf_psk
-// ssl_conf_psk_cb
 // ssl_conf_sig_hashes
 // ssl_conf_alpn_protocols
 // ssl_conf_fallback
