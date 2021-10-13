@@ -116,6 +116,13 @@ impl super::BuildConfig {
             };
         }
 
+        let is_debug = std::env::var("PROFILE").and_then(|v| Ok(v == "debug")).unwrap_or(false);
+        let mut attributes = vec!["dead_code", "non_snake_case", "non_camel_case_types", "non_upper_case_globals", "invalid_value"];
+        if is_debug {
+            attributes.push("deref_nullptr");
+        };
+        let lint: String = attributes.iter().map(|att| format!("#![allow({})]\n", att)).collect();
+
         let bindings = bindgen::builder()
             .clang_args(cc.get_compiler().args().iter().map(|arg| arg.to_str().unwrap()))
             .header_contents("bindgen-input.h", &input)
@@ -135,7 +142,7 @@ impl super::BuildConfig {
             .prepend_enum_name(false)
             .translate_enum_integer_types(true)
             .rustfmt_bindings(false)
-            .raw_line("#![allow(dead_code, non_snake_case, non_camel_case_types, non_upper_case_globals, invalid_value)]")
+            .raw_line(lint)
             .generate()
             .expect("bindgen error")
             .to_string();
